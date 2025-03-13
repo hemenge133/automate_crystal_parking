@@ -154,8 +154,8 @@ def check_parking_availability():
         password_field = driver.find_element(By.CSS_SELECTOR, 'input[type="password"]')
         
         print("Found login form, entering credentials...")
-        username_field.send_keys('megamenge')
-        password_field.send_keys('xbk7rmd@FGA6xkz3tyb')
+        username_field.send_keys(username)
+        password_field.send_keys(password)
         
         # Submit the form
         password_field.submit()
