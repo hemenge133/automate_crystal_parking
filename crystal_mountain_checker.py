@@ -2,13 +2,14 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, StaleElementReferenceException
+from selenium.common.exceptions import TimeoutException, StaleElementReferenceException, NoSuchElementException
 import time
 import beepy
 import os
 import argparse
 import datetime
 import re
+import sys
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -40,46 +41,69 @@ def parse_date(date_str):
     except ValueError as e:
         raise ValueError(f"Invalid date: {e}")
 
+def is_date_in_past(target_date):
+    """Check if the given date is in the past"""
+    today = datetime.date.today()
+    return target_date < today
+
 def find_calendar_element(driver, target_date):
     """Find the calendar element for the given date"""
     # Format for calendar element: calendar_YYYY-MM
     calendar_id = f'calendar_{target_date.year}-{target_date.month:02d}'
     print(f"Looking for calendar with ID: {calendar_id}")
     
-    # Wait for the calendar to be visible
-    WebDriverWait(driver, 10).until(
-        EC.presence_of_element_located((By.ID, calendar_id))
-    )
-    
-    # Find all day elements in the target month
-    day_elements = driver.find_elements(By.CSS_SELECTOR, f'#{calendar_id} > div')
-    
-    # Find the element corresponding to the target day
-    for element in day_elements:
-        try:
-            # Each day has a data-date attribute or text content with the day
-            if element.get_attribute('data-date'):
-                element_date = element.get_attribute('data-date')
-                if str(target_date.day) in element_date:
+    try:
+        # Wait for the calendar to be visible
+        WebDriverWait(driver, 5).until(
+            EC.presence_of_element_located((By.ID, calendar_id))
+        )
+        
+        # Find all day elements in the target month
+        day_elements = driver.find_elements(By.CSS_SELECTOR, f'#{calendar_id} > div')
+        
+        # Find the element corresponding to the target day
+        for element in day_elements:
+            try:
+                # Each day has a data-date attribute or text content with the day
+                if element.get_attribute('data-date'):
+                    element_date = element.get_attribute('data-date')
+                    if str(target_date.day) in element_date:
+                        return element
+                
+                # If no data-date attribute, check the text content
+                if element.text and element.text.strip().isdigit():
+                    if int(element.text.strip()) == target_date.day:
+                        return element
+            except:
+                continue
+        
+        # If we can't find the exact day, try finding by child span with the day number
+        for element in day_elements:
+            try:
+                day_text = element.text.strip()
+                if day_text and day_text.isdigit() and int(day_text) == target_date.day:
                     return element
+            except:
+                continue
+                
+        # If we get here, the day wasn't found but the calendar month exists
+        print(f"Warning: Day {target_date.day} not found in calendar {calendar_id}.")
+        return None
             
-            # If no data-date attribute, check the text content
-            if element.text and element.text.strip().isdigit():
-                if int(element.text.strip()) == target_date.day:
-                    return element
-        except:
-            continue
-    
-    # If we can't find the exact day, try finding by child span with the day number
-    for element in day_elements:
-        try:
-            day_text = element.text.strip()
-            if day_text and day_text.isdigit() and int(day_text) == target_date.day:
-                return element
-        except:
-            continue
-            
-    raise ValueError(f"Could not find calendar element for {target_date.month}/{target_date.day}/{target_date.year}")
+    except (TimeoutException, NoSuchElementException):
+        # Calendar for this month is not available
+        today = datetime.date.today()
+        
+        # Check if the date is in a reasonable range (next 12 months)
+        max_future_date = today.replace(year=today.year + 1)
+        if target_date > max_future_date:
+            print(f"The selected date ({target_date.month}/{target_date.day}/{target_date.year}) is too far in the future.")
+            print(f"Crystal Mountain typically only allows reservations up to a year in advance.")
+        else:
+            print(f"Calendar for {target_date.month}/{target_date.year} is not available.")
+            print("Crystal Mountain may not have opened reservations for this month yet.")
+        
+        return None
 
 def check_parking_availability(date_str=None):
     # Get credentials from environment variables
@@ -92,8 +116,19 @@ def check_parking_availability(date_str=None):
     # Parse date if provided
     target_date = None
     if date_str:
-        target_date = parse_date(date_str)
-        print(f"Checking availability for: {target_date.month}/{target_date.day}/{target_date.year}")
+        try:
+            target_date = parse_date(date_str)
+            print(f"Checking availability for: {target_date.month}/{target_date.day}/{target_date.year}")
+            
+            # Check if the date is in the past
+            if is_date_in_past(target_date):
+                print(f"Error: The selected date ({target_date.month}/{target_date.day}/{target_date.year}) is in the past.")
+                print("Please select a current or future date.")
+                return
+                
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
     else:
         print("No date specified, using default date from the script")
     
@@ -131,27 +166,39 @@ def check_parking_availability(date_str=None):
         # Wait after login
         time.sleep(2)
         
+        # Navigate to main page
+        print("Navigating to main page...")
+        driver.get('https://parking.crystalmountainresort.com/')
+        time.sleep(2)  # Wait for page load
+        
+        # Find and click the calendar date
+        if target_date:
+            print(f"Looking for date: {target_date.month}/{target_date.day}/{target_date.year}")
+            calendar_element = find_calendar_element(driver, target_date)
+            if not calendar_element:
+                print("Error: Could not find the requested date in the available calendars.")
+                print("Please check if this date is available for booking.")
+                return
+            
+            print(f"Found calendar element, clicking...")
+            calendar_element.click()
+        else:
+            # Default to the original calendar date if no date provided
+            print("Using default date selector...")
+            try:
+                calendar_date = WebDriverWait(driver, 10).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, '#calendar_2025-03 > div:nth-child(29)'))
+                )
+                calendar_date.click()
+            except TimeoutException:
+                print("Error: Default date (March 29, 2025) is not available in the calendar.")
+                print("Please specify a date using the --date argument.")
+                return
+        
+        # Now begin the monitoring loop
+        print("Starting to monitor for parking availability...")
         while True:
             try:
-                # Navigate to main page
-                print("Navigating to main page...")
-                driver.get('https://parking.crystalmountainresort.com/')
-                time.sleep(2)  # Wait for page load
-                
-                # Find and click the calendar date
-                if target_date:
-                    print(f"Looking for date: {target_date.month}/{target_date.day}/{target_date.year}")
-                    calendar_element = find_calendar_element(driver, target_date)
-                    print(f"Found calendar element, clicking...")
-                    calendar_element.click()
-                else:
-                    # Default to the original calendar date if no date provided
-                    print("Using default date selector...")
-                    calendar_date = WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, '#calendar_2025-03 > div:nth-child(29)'))
-                    )
-                    calendar_date.click()
-                
                 # Wait for page load after click
                 time.sleep(2)
                 

@@ -13,8 +13,8 @@ An automated tool to check for parking availability at Crystal Mountain Resort. 
 ## Requirements
 
 - Python 3.7+
-- Chrome browser
-- ChromeDriver (matching your Chrome version)
+- Chrome browser installed
+- Python packages (installed via requirements.txt)
 
 ## Installation
 
@@ -34,6 +34,12 @@ pip install -r requirements.txt
 CRYSTAL_USERNAME=your_username
 CRYSTAL_PASSWORD=your_password
 ```
+
+Alternatively, copy and rename the example file:
+```bash
+cp .env.example .env
+```
+Then edit the `.env` file with your actual credentials.
 
 ## Usage
 
@@ -93,10 +99,17 @@ python crystal_mountain_checker.py
 
 If you encounter issues:
 
-1. Make sure your Chrome browser and ChromeDriver versions match
+1. Make sure Chrome browser is installed and up to date
 2. Verify your Crystal Mountain credentials in the `.env` file
 3. Check that the date format is correct (MM/DD or MM/DD/YYYY)
-4. Ensure you have a stable internet connection
+4. If the script reports the date is not available, try a different date
+5. Ensure you have a stable internet connection
+
+## Notes on Dates
+
+- Dates in the past will be rejected with an error message
+- If a date is too far in the future (beyond what Crystal Mountain offers), the script will exit with an error
+- If a calendar month is not yet available for booking, the script will inform you and exit
 
 ## Known Limitations
 
