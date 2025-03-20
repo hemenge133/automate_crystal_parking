@@ -1,4 +1,4 @@
-# Crystal Mountain Parking Checker
+# Parking Checker
 
 An automated tool to check for parking availability at Crystal Mountain Resort. The script will continuously monitor parking availability for a specified date and alert you when a spot becomes available.
 
