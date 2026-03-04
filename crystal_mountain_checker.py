@@ -17,9 +17,14 @@ load_dotenv()
 
 def play_alert():
     """Play alert sound multiple times"""
-    for _ in range(10):  # Play 10 times
-        beepy.beep(sound=1)
-        time.sleep(1)
+    try:
+        for _ in range(10):  # Play 10 times
+            beepy.beep(sound=1)
+            time.sleep(1)
+    except Exception as e:
+        # Fallback to system bell if beepy fails
+        print(f"\a")  # System bell
+        print(f"(Alert sound unavailable: {e})")
 
 def parse_date(date_str):
     """Parse date string in MM/DD or MM/DD/YYYY format"""
@@ -41,10 +46,12 @@ def parse_date(date_str):
     except ValueError as e:
         raise ValueError(f"Invalid date: {e}")
 
-def is_date_in_past(target_date):
+def date_invalid(target_date):
     """Check if the given date is in the past"""
     today = datetime.date.today()
-    return target_date < today
+    next_week = today + datetime.timedelta(days=7)
+
+    return target_date < today or target_date > next_week
 
 def find_calendar_element(driver, target_date):
     """Find the calendar element for the given date"""
@@ -62,27 +69,29 @@ def find_calendar_element(driver, target_date):
         day_elements = driver.find_elements(By.CSS_SELECTOR, f'#{calendar_id} > div')
         
         # Find the element corresponding to the target day
-        for element in day_elements:
-            try:
-                # Each day has a data-date attribute or text content with the day
-                if element.get_attribute('data-date'):
-                    element_date = element.get_attribute('data-date')
-                    if str(target_date.day) in element_date:
-                        return element
-                
-                # If no data-date attribute, check the text content
-                if element.text and element.text.strip().isdigit():
-                    if int(element.text.strip()) == target_date.day:
-                        return element
-            except:
-                continue
-        
-        # If we can't find the exact day, try finding by child span with the day number
+        # First try to find by exact text match (most reliable)
         for element in day_elements:
             try:
                 day_text = element.text.strip()
+                # Check if the text is exactly the day number we're looking for
                 if day_text and day_text.isdigit() and int(day_text) == target_date.day:
                     return element
+            except:
+                continue
+        
+        # If not found by text, try matching by data-date attribute
+        # Format: 2026-03-08T08:00:00.000Z - extract the day part properly
+        for element in day_elements:
+            try:
+                data_date = element.get_attribute('data-date')
+                if data_date:
+                    # Parse ISO date format: 2026-03-08T08:00:00.000Z
+                    # Extract day from YYYY-MM-DD part
+                    date_parts = data_date.split('T')[0].split('-')
+                    if len(date_parts) == 3:
+                        element_day = int(date_parts[2])
+                        if element_day == target_date.day:
+                            return element
             except:
                 continue
                 
@@ -91,19 +100,138 @@ def find_calendar_element(driver, target_date):
         return None
             
     except (TimeoutException, NoSuchElementException):
-        # Calendar for this month is not available
-        today = datetime.date.today()
-        
-        # Check if the date is in a reasonable range (next 12 months)
-        max_future_date = today.replace(year=today.year + 1)
-        if target_date > max_future_date:
-            print(f"The selected date ({target_date.month}/{target_date.day}/{target_date.year}) is too far in the future.")
-            print(f"Crystal Mountain typically only allows reservations up to a year in advance.")
-        else:
-            print(f"Calendar for {target_date.month}/{target_date.year} is not available.")
-            print("Crystal Mountain may not have opened reservations for this month yet.")
-        
+        print(f"Calendar for {target_date.month}/{target_date.year} is not available.")
+        print("Crystal Mountain may not have opened reservations for this month yet.")
         return None
+
+def complete_reservation(driver, target_date):
+    """Click the parking button and checkout to complete the reservation"""
+    try:
+        print("Attempting to complete reservation...")
+        
+        # Wait a moment for any dynamic content to settle
+        time.sleep(2)
+        
+        # Debug: Check if spot-select exists
+        try:
+            spot_select = driver.find_element(By.ID, 'spot-select')
+            print(f"✅ Found spot-select element")
+            # Check what's inside - look for all clickable rows
+            buttons = spot_select.find_elements(By.CSS_SELECTOR, '.spot-row')
+            print(f"   Found {len(buttons)} spot-row elements")
+            for i, btn in enumerate(buttons):
+                try:
+                    class_attr = btn.get_attribute('class')
+                    data_type = btn.get_attribute('data-type')
+                    text = btn.text[:60] if btn.text else "no text"
+                    print(f"   Row {i}: class={class_attr[:80]}, data-type={data_type}")
+                    print(f"         text={text}")
+                except Exception as ex:
+                    print(f"   Row {i}: error getting attrs: {ex}")
+        except Exception as e:
+            print(f"❌ spot-select not found: {e}")
+        
+        # Click the "Reserve car parking" button
+        # The actual clickable element is a div with class 'add2cart' and data-type='car'
+        parking_button = None
+        
+        # Try multiple selectors
+        selectors = [
+            (By.CSS_SELECTOR, '#spot-select .add2cart[data-type="car"]'),
+            (By.CSS_SELECTOR, '#spot-select .spot-row[data-type="car"]'),
+            (By.XPATH, '//div[@id="spot-select"]//div[contains(@class, "add2cart") and @data-type="car"]'),
+            (By.XPATH, '//div[@id="spot-select"]//div[contains(text(), "Reserve Car Parking")]'),
+        ]
+        
+        for by, selector in selectors:
+            try:
+                parking_button = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((by, selector))
+                )
+                print(f"✅ Found parking button using: {selector}")
+                break
+            except:
+                continue
+        
+        if not parking_button:
+            print("❌ Could not find parking button with any selector")
+            return False
+        
+        try:
+            print(f"Clicking parking button (tag: {parking_button.tag_name})...")
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", parking_button)
+            time.sleep(0.5)
+            
+            # Click using regular click (JavaScript click might bypass the event handler)
+            parking_button.click()
+            print("✅ Clicked 'Reserve car parking' button")
+            time.sleep(3)  # Wait for AJAX call and redirect
+            
+            # Debug: Check current URL
+            current_url = driver.current_url
+            print(f"Current URL after clicking reserve: {current_url}")
+            
+        except Exception as e:
+            print(f"❌ Error clicking parking button: {e}")
+            return False
+        
+        # Check if we're back at the calendar page
+        calendar_id = f'calendar_{target_date.year}-{target_date.month:02d}'
+        try:
+            WebDriverWait(driver, 3).until(
+                EC.presence_of_element_located((By.ID, calendar_id))
+            )
+            print("⚠️ We're back at the calendar page after clicking reserve")
+            print("The click may have triggered a page refresh. Will retry...")
+            return False
+        except:
+            # Not at calendar page, good - continue to checkout
+            pass
+        
+        # After adding to cart, we should be redirected to cart page or stay on same page
+        # The AJAX call redirects to /cart/ on success
+        # Wait for the cart page to load and click checkout
+        try:
+            # First, select the last option from the form dropdown if it exists
+            # XPath: /html/body/div[1]/div[1]/select
+            try:
+                select_element = WebDriverWait(driver, 5).until(
+                    EC.presence_of_element_located((By.XPATH, '/html/body/div[1]/div[1]/select'))
+                )
+                # Get all options and select the last one
+                options = select_element.find_elements(By.TAG_NAME, 'option')
+                if len(options) > 0:
+                    last_option = options[-1]
+                    last_option_text = last_option.text
+                    print(f"Found select dropdown with {len(options)} options, selecting last: '{last_option_text}'")
+                    last_option.click()
+                    time.sleep(1)
+                    print("✅ Selected last option from dropdown")
+                else:
+                    print("Select dropdown found but no options available")
+            except Exception as e:
+                print(f"Select dropdown not found or error selecting: {e}")
+                # Continue anyway, the select might not always be present
+            
+            # Wait for either the checkout button or cart page elements
+            checkout_button = WebDriverWait(driver, 15).until(
+                EC.element_to_be_clickable((By.XPATH, '//*[@id="btnCheckout"]'))
+            )
+            print("Found checkout button, clicking...")
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", checkout_button)
+            time.sleep(0.5)
+            checkout_button.click()
+            print("✅ Successfully clicked checkout button!")
+            time.sleep(3)  # Wait for checkout page to load
+            return True
+        except Exception as e:
+            print(f"❌ Error clicking checkout button: {e}")
+            print("Reserve button was clicked. You may need to click checkout manually.")
+            return True  # Return True since we at least tried to reserve
+            
+    except Exception as e:
+        print(f"❌ Error completing reservation: {e}")
+        return False
 
 def check_parking_availability(date_str=None):
     # Get credentials from environment variables
@@ -120,8 +248,7 @@ def check_parking_availability(date_str=None):
             target_date = parse_date(date_str)
             print(f"Checking availability for: {target_date.month}/{target_date.day}/{target_date.year}")
             
-            # Check if the date is in the past
-            if is_date_in_past(target_date):
+            if date_invalid(target_date):
                 print(f"Error: The selected date ({target_date.month}/{target_date.day}/{target_date.year}) is in the past.")
                 print("Please select a current or future date.")
                 return
@@ -197,8 +324,25 @@ def check_parking_availability(date_str=None):
         
         # Now begin the monitoring loop
         print("Starting to monitor for parking availability...")
+        
+        # Track if we need to (re)click the calendar date
+        needs_date_click = False
+        
         while True:
             try:
+                # If we need to click the date (first run or after refresh), find and click it
+                if needs_date_click:
+                    print("Re-finding and clicking calendar date...")
+                    calendar_element = find_calendar_element(driver, target_date)
+                    if calendar_element:
+                        calendar_element.click()
+                        print("Clicked calendar date, waiting for page to load...")
+                    else:
+                        print("Warning: Could not find calendar date element, retrying...")
+                        time.sleep(2)
+                        continue
+                    needs_date_click = False
+                
                 # Wait for page load after click
                 time.sleep(2)
                 
@@ -232,29 +376,49 @@ def check_parking_availability(date_str=None):
                     time.sleep(5)  # Wait 5 seconds before rechecking
                     driver.refresh()
                     time.sleep(2)  # Wait for page to load
+                    needs_date_click = True  # Need to click date after refresh
                     continue
                 else:
                     print("\n🎉 FOUND AVAILABLE PARKING! 🎉")
-                    print("Browser window will remain open so you can complete the reservation.")
-                    print("Press Ctrl+C in this terminal to stop the script.")
                     
-                    # Play alert sound
-                    play_alert()
+                    # Play alert sound (with error handling)
+                    try:
+                        play_alert()
+                    except Exception as e:
+                        print(f"Could not play alert sound: {e}")
+                    
+                    # Attempt to complete the reservation
+                    success = complete_reservation(driver, target_date)
+                    
+                    if success:
+                        print("\n✅ Reservation process initiated successfully!")
+                        print("Please check the browser to confirm and complete any remaining steps.")
+                        print("Browser window will remain open. Press Ctrl+C to exit.")
+                    else:
+                        print("\n⚠️ Could not complete reservation automatically.")
+                        print("Browser window will remain open for manual completion.")
+                        print("Press Ctrl+C to exit.")
                     
                     # Keep the browser window open indefinitely
                     while True:
-                        time.sleep(1)
+                        try:
+                            time.sleep(1)
+                        except KeyboardInterrupt:
+                            print("\nScript stopped by user. Closing browser...")
+                            return  # Exit the function completely
                     
             except TimeoutException:
                 current_time = time.strftime("%H:%M:%S")
                 print(f"[{current_time}] Timeout occurred. Refreshing...")
                 driver.refresh()
                 time.sleep(2)
+                needs_date_click = True  # Need to click date after refresh
                 continue
             except StaleElementReferenceException:
                 current_time = time.strftime("%H:%M:%S")
                 print(f"[{current_time}] Page was updating, retrying...")
                 time.sleep(2)
+                needs_date_click = True  # Need to click date after page update
                 continue
             except Exception as e:
                 current_time = time.strftime("%H:%M:%S")
@@ -262,6 +426,7 @@ def check_parking_availability(date_str=None):
                 print("Refreshing page...")
                 driver.refresh()
                 time.sleep(2)
+                needs_date_click = True  # Need to click date after refresh
                 continue
                 
     except KeyboardInterrupt:
