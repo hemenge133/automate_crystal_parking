@@ -8,6 +8,7 @@ import beepy
 import os
 import argparse
 import datetime
+import threading
 import re
 import sys
 from dotenv import load_dotenv
@@ -111,36 +112,48 @@ def complete_reservation(driver, target_date):
         
         # Wait a moment for any dynamic content to settle
         time.sleep(2)
-        
-        # Debug: Check if spot-select exists
-        try:
-            spot_select = driver.find_element(By.ID, 'spot-select')
-            print(f"✅ Found spot-select element")
-            # Check what's inside - look for all clickable rows
-            buttons = spot_select.find_elements(By.CSS_SELECTOR, '.spot-row')
-            print(f"   Found {len(buttons)} spot-row elements")
-            for i, btn in enumerate(buttons):
-                try:
-                    class_attr = btn.get_attribute('class')
-                    data_type = btn.get_attribute('data-type')
-                    text = btn.text[:60] if btn.text else "no text"
-                    print(f"   Row {i}: class={class_attr[:80]}, data-type={data_type}")
-                    print(f"         text={text}")
-                except Exception as ex:
-                    print(f"   Row {i}: error getting attrs: {ex}")
-        except Exception as e:
-            print(f"❌ spot-select not found: {e}")
+
+        # Wait for spot-select to be populated (AJAX fills it after calendar click)
+        spot_select = None
+        for attempt in range(5):
+            try:
+                spot_select = driver.find_element(By.ID, 'spot-select')
+                buttons = spot_select.find_elements(By.CSS_SELECTOR, '.spot-row')
+                if buttons:
+                    print(f"✅ Found spot-select with {len(buttons)} spot-row elements")
+                    for i, btn in enumerate(buttons):
+                        try:
+                            data_type = btn.get_attribute('data-type')
+                            text = btn.text[:60] if btn.text else "no text"
+                            print(f"   Row {i}: data-type={data_type}, text={text}")
+                        except Exception as ex:
+                            print(f"   Row {i}: error getting attrs: {ex}")
+                    break
+                else:
+                    print(f"   spot-select found but empty, retrying ({attempt+1}/5)...")
+            except Exception as e:
+                print(f"   spot-select not found, retrying ({attempt+1}/5)...")
+            time.sleep(1)
+        else:
+            print("❌ spot-select never populated after 5 attempts")
         
         # Click the "Reserve car parking" button
         # The actual clickable element is a div with class 'add2cart' and data-type='car'
         parking_button = None
         
-        # Try multiple selectors
+        # Try multiple selectors (including fallbacks that don't depend on #spot-select)
         selectors = [
             (By.CSS_SELECTOR, '#spot-select .add2cart[data-type="car"]'),
             (By.CSS_SELECTOR, '#spot-select .spot-row[data-type="car"]'),
             (By.XPATH, '//div[@id="spot-select"]//div[contains(@class, "add2cart") and @data-type="car"]'),
             (By.XPATH, '//div[@id="spot-select"]//div[contains(text(), "Reserve Car Parking")]'),
+            # Fallback selectors that don't require #spot-select
+            (By.CSS_SELECTOR, '.add2cart[data-type="car"]'),
+            (By.CSS_SELECTOR, '.spot-row[data-type="car"]'),
+            (By.XPATH, '//div[contains(@class, "add2cart") and @data-type="car"]'),
+            (By.XPATH, '//*[contains(text(), "Reserve Car Parking")]'),
+            (By.XPATH, '//*[contains(text(), "Reserve car parking")]'),
+            (By.XPATH, '//*[contains(text(), "Car Parking") and (contains(@class, "add") or contains(@class, "btn") or contains(@class, "reserve"))]'),
         ]
         
         for by, selector in selectors:
@@ -381,11 +394,8 @@ def check_parking_availability(date_str=None):
                 else:
                     print("\n🎉 FOUND AVAILABLE PARKING! 🎉")
                     
-                    # Play alert sound (with error handling)
-                    try:
-                        play_alert()
-                    except Exception as e:
-                        print(f"Could not play alert sound: {e}")
+                    # Play alert sound in background (non-blocking)
+                    threading.Thread(target=play_alert, daemon=True).start()
                     
                     # Attempt to complete the reservation
                     success = complete_reservation(driver, target_date)
